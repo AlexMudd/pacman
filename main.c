@@ -16,7 +16,7 @@ typedef struct {
     uint32_t y;
     uint32_t direction;
     uint32_t player_name_len;
-    uint8_t player_name[];
+    uint8_t* player_name;
 }player;
 
 enum direction{
@@ -355,12 +355,10 @@ void init_player(int number, player* pacman, enum direction dir, uint8_t** q_map
     pacman->x = (number == 0 || number == 2) ? x0 : (39 - x0);
     pacman->y = (number == 0 || number == 1) ? y0 : (29 - y0); 
 
+    //strcpy(pacman->player_name, player_name[number]);
+    pacman->player_name = (uint8_t*)malloc(strlen(player_name[number]) + 1);
     strcpy(pacman->player_name, player_name[number]);
     pacman->player_name_len = strlen(player_name[number]);
-    ////////////////////////////////////////////////////////////////
-    printf("Player #%d %s with coords x: %d y: %d and direction %d\n", number, pacman->player_name, pacman->x, pacman->y, pacman->direction);
-    //////////////////////////////////////////////////////////////////
-
 }
 
 void init_game(uint8_t** q_map){
@@ -442,7 +440,15 @@ int server_wait(uint8_t** q_map){
     }
 
     init_game(q_map);
+    ////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////
+    for(int i = 0; i < player_count; i++){
+        printf("Player #%d %s with coords x: %d y: %d and direction %d\t Size of player is %ld\n", i, pacman[i].player_name, pacman[i].x, pacman[i].y, pacman[i].direction, sizeof(player) - sizeof(uint8_t*) + pacman[i].player_name_len);
+    }
+    //////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////
 
+    //Принимаем готовность игроков
     for(int i = 1; i < player_count; i++){
         packet ready_pack;
         recv(players_sockets[i], &ready_pack, sizeof(packet), 0);
@@ -453,7 +459,30 @@ int server_wait(uint8_t** q_map){
     }
 
     //Отправка всей инфы об игре и игроках
+    packet game_pack;
+    game_pack.ptype = 0x20;
+    game_pack.magic = MAGIC;
+    game_pack.datasize = sizeof(uint32_t)*2;
+    for(int i = 0; i < player_count; i++){
+        game_pack.datasize += (sizeof(player) - sizeof(uint8_t*) + pacman[i].player_name_len);
+    }
+    printf("Packet size is %d\n", game_pack.datasize);
 
+    for(int i = 1; i < player_count; i++){
+        sendto(players_sockets[i], &game_pack, sizeof(packet), 0, (struct sockaddr*)&players_addr[i], players_addr_size[i]);
+    }
+    for(int i = 1; i < player_count; i++){
+        sendto(players_sockets[i], &frame_timeout, sizeof(uint32_t), 0, (struct sockaddr*)&players_addr[i], players_addr_size[i]);
+    }
+    for(int i = 1; i < player_count; i++){
+        sendto(players_sockets[i], &player_count, sizeof(uint32_t), 0, (struct sockaddr*)&players_addr[i], players_addr_size[i]);
+    }
+    for(int i = 0; i < player_count; i++){
+        for(int j = 1; j < player_count; j++){
+            sendto(players_sockets[j], &pacman[i], sizeof(player) - sizeof(uint8_t*), 0, (struct sockaddr*)&players_addr[i], players_addr_size[i]);
+            sendto(players_sockets[j], pacman[i].player_name, pacman[i].player_name_len, 0, (struct sockaddr*)&players_addr[i], players_addr_size[i]);
+        }
+    }
 
 
 }
@@ -510,9 +539,25 @@ int connect_client(uint8_t** q_map){
     sendto(players_sockets[0], &ready_pack, sizeof(packet), 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
 
     //Получаем тот самый большой пакет с инфой об игре и игроках
+    packet game_info;
+    recv(players_sockets[0], &game_info, sizeof(packet), 0);
+    if(game_info.ptype == 0x20 && game_info.magic == MAGIC){
+        recv(players_sockets[0], &frame_timeout, sizeof(uint32_t), 0);
+        recv(players_sockets[0], &player_count, sizeof(uint32_t), 0);
+        for(int i = 0; i < player_count; i++){
+            recv(players_sockets[0], &pacman[i], sizeof(player) - sizeof(uint8_t*), 0);
+            pacman[i].player_name = (uint8_t*)malloc(pacman[i].player_name_len + 1);
+            recv(players_sockets[0], pacman[i].player_name, pacman[i].player_name_len, 0);
+        }
+    }
+    else{
+        printf("Error getting game info\n");
+        return 0;
+    }
 
-
-
+    for(int i = 0; i < player_count; i++){
+        printf("Player #%d %s with coords x: %d y: %d and direction %d\t Size of player is %ld\n", i, pacman[i].player_name, pacman[i].x, pacman[i].y, pacman[i].direction, sizeof(player) - sizeof(uint8_t*) + pacman[i].player_name_len);
+    }
 
 }
 
@@ -550,7 +595,7 @@ int main(int argc, char** argv){
         if(!connect_client(q_map)){ return -1; }
     }
 
-    map = unpack_map(q_map, 3);
+    map = unpack_map(q_map, player_count);
 
     initscr();
     curs_set(0);
